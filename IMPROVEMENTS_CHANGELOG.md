@@ -1,61 +1,52 @@
-# Performance & Reliability Improvements
+# Performance Improvements
 
-**Branch:** `improve/performance-and-reliability`  
-**Date:** January 27, 2026  
-**Commit:** f23cc44
+Made several optimizations to reduce memory usage and improve responsiveness.
 
-## Overview
-This pull request implements 7 key performance and reliability improvements to the cmd-chat application, focusing on reducing memory usage, minimizing lock contention, and improving error handling.
+## Changes
 
----
+### Message Pagination (stores.py)
+Limited message history to 50 messages. Keeps memory usage in check and speeds up state sync.
 
-## Improvements Implemented
+### Session Cleanup (factory.py)
+Changed cleanup from 5 minutes to 1 minute. Faster detection of dead sessions.
 
-### 1. ✅ Message Pagination (stores.py)
-**File:** `cmd_chat/server/stores.py`  
-**Impact:** 📊 **High** - Memory & Performance
+### Error Logging (views.py & managers.py)
+Added proper logging instead of silent failures. Renamed `logger` to `log` for consistency. Added connection/disconnect logs.
 
-**Changes:**
-- Modified `MessageStore.get_all()` to return only the last 50 messages by default
-- Added optional `limit` parameter for flexibility
-- Prevents unbounded memory growth in long-running sessions
+### Broadcast Lock (managers.py)
+Reduced lock contention in broadcast. Now takes a snapshot and sends without holding the lock.
 
-**Benefits:**
-- Reduces memory footprint for servers with many messages
-- Faster state synchronization when new clients join
-- Improved broadcast performance with smaller payload sizes
-
-**Code:**
+Before:
 ```python
-def get_all(self, limit: int = 50) -> list[Message]:
-    """Get messages with pagination. Returns last `limit` messages."""
-    return self._messages[-limit:].copy() if len(self._messages) > 0 else []
+async with self._lock:
+    for user_id, ws in self.active_connections.items():
+        await ws.send(message)
 ```
 
----
-
-### 2. ✅ Faster Stale Session Cleanup (factory.py)
-**File:** `cmd_chat/server/factory.py`  
-**Impact:** 📊 **Medium** - Responsiveness
-
-**Changes:**
-- Reduced cleanup interval from 300 seconds (5 min) to 60 seconds (1 min)
-- More responsive detection and removal of stale sessions
-
-**Benefits:**
-- Cleaner active user lists
-- Faster detection of disconnected users
-- Better real-time session management
-
-**Code Change:**
+After:
 ```python
-# Before: await asyncio.sleep(300)
-# After:  await asyncio.sleep(60)  # Check every 60 seconds for stale sessions
+async with self._lock:
+    snapshot = list(self.active_connections.items())
+
+for uid, ws in snapshot:
+    await ws.send(message)
 ```
 
----
+### Message Decryption Cache (client.py)
+Cache decrypted messages so we don't decrypt the same message 15 times on every render.
 
-### 3. ✅ Comprehensive Error Logging (views.py & managers.py)
+### Session Validation (views.py)
+Check that session is still valid before processing incoming messages.
+
+### SRP Cleanup (views.py)
+Remove SRP session from memory after authentication succeeds.
+
+## Result
+- Lower memory usage
+- Better logging for debugging
+- Faster broadcast with many users
+- Client rendering is snappier
+
 **File:** `cmd_chat/server/views.py` & `cmd_chat/server/managers.py`  
 **Impact:** 📊 **Medium** - Debugging & Monitoring
 

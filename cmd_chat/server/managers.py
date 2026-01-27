@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 from sanic import Websocket
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class ConnectionManager:
@@ -14,43 +14,40 @@ class ConnectionManager:
     async def connect(self, user_id: str, websocket: Websocket) -> None:
         async with self._lock:
             self.active_connections[user_id] = websocket
-        logger.info(f"User {user_id} connected")
+        log.info(f"{user_id} connected")
 
     async def disconnect(self, user_id: str) -> None:
         async with self._lock:
             if user_id in self.active_connections:
                 del self.active_connections[user_id]
-        logger.info(f"User {user_id} disconnected")
+        log.info(f"{user_id} disconnected")
 
     async def broadcast(self, message: str, exclude_user: Optional[str] = None) -> None:
-        # Get snapshot of connections to minimize lock duration
         async with self._lock:
-            connections_snapshot = list(self.active_connections.items())
+            snapshot = list(self.active_connections.items())
         
-        disconnected = []
-        for user_id, connection in connections_snapshot:
-            if exclude_user and user_id == exclude_user:
+        dead = []
+        for uid, ws in snapshot:
+            if exclude_user and uid == exclude_user:
                 continue
             try:
-                await connection.send(message)
+                await ws.send(message)
             except Exception as e:
-                logger.debug(f"Failed to send to user {user_id}: {type(e).__name__}")
-                disconnected.append(user_id)
+                log.debug(f"send failed {uid}: {type(e).__name__}")
+                dead.append(uid)
 
-        # Clean up disconnected users
-        if disconnected:
+        if dead:
             async with self._lock:
-                for user_id in disconnected:
-                    if user_id in self.active_connections:
-                        del self.active_connections[user_id]
+                for uid in dead:
+                    self.active_connections.pop(uid, None)
 
     async def send_personal(self, user_id: str, message: str) -> bool:
         async with self._lock:
-            if connection := self.active_connections.get(user_id):
+            if ws := self.active_connections.get(user_id):
                 try:
-                    await connection.send(message)
+                    await ws.send(message)
                     return True
                 except Exception as e:
-                    logger.debug(f"Failed to send personal message to user {user_id}: {type(e).__name__}")
+                    log.debug(f"personal msg failed {user_id}: {type(e).__name__}")
                     return False
         return False

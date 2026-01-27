@@ -112,11 +112,9 @@ class Client:
     def decrypt_message(self, msg: dict) -> dict:
         if "text" in msg and msg["text"]:
             try:
-                # Store decrypted text to avoid re-decryption on every render
                 if "_decrypted_text" not in msg:
-                    decrypted = self.room_fernet.decrypt(msg["text"].encode()).decode()
-                    msg["_decrypted_text"] = decrypted
-                msg["text"] = msg.get("_decrypted_text", msg["text"])
+                    msg["_decrypted_text"] = self.room_fernet.decrypt(msg["text"].encode()).decode()
+                msg["text"] = msg["_decrypted_text"]
             except Exception:
                 msg["text"] = "[decrypt failed]"
         return msg

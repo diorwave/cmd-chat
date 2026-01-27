@@ -14,7 +14,7 @@ from .helpers import (
     utcnow,
 )
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
@@ -43,7 +43,7 @@ async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
         )
 
     except Exception as e:
-        logger.error(f"SRP init failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        log.error(f"srp_init error: {type(e).__name__}: {e}", exc_info=True)
         return response.json({"error": "SRP init failed"}, status=500)
 
 
@@ -70,8 +70,6 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
             fernet_key=fernet_key,
         )
         app.ctx.session_store.add(session)
-        
-        # Clean up verified SRP session to free memory
         app.ctx.srp_manager.remove_session(user_id)
 
         return response.json(
@@ -82,10 +80,10 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
         )
 
     except ValueError as e:
-        logger.warning(f"SRP verify failed for user: {str(e)}")
+        log.warning(f"srp_verify: {e}")
         return response.json({"error": str(e)}, status=401)
     except Exception as e:
-        logger.error(f"SRP verify failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        log.error(f"srp_verify error: {type(e).__name__}: {e}", exc_info=True)
         return response.json({"error": "SRP verify failed"}, status=500)
 
 
@@ -111,9 +109,8 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
             if data is None:
                 break
 
-            # Validate session is still active
             if not app.ctx.session_store.get(user_id):
-                logger.warning(f"Session invalidated during message receive: {user_id}")
+                log.warning(f"session lost: {user_id}")
                 break
 
             app.ctx.session_store.update_activity(user_id)
@@ -135,7 +132,7 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
             )
 
     except Exception as e:
-        logger.error(f"WebSocket error for user {user_id}: {type(e).__name__}: {str(e)}", exc_info=True)
+        log.error(f"ws error {user_id}: {type(e).__name__}: {e}", exc_info=True)
     finally:
         await manager.disconnect(user_id)
         await manager.broadcast(

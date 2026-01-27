@@ -10,8 +10,7 @@ class MessageStore:
         self._messages.append(message)
 
     def get_all(self, limit: int = 50) -> list[Message]:
-        """Get messages with pagination. Returns last `limit` messages."""
-        return self._messages[-limit:].copy() if len(self._messages) > 0 else []
+        return self._messages[-limit:].copy() if self._messages else []
 
     def clear(self) -> None:
         count = len(self._messages)

@@ -44,5 +44,5 @@ def register_lifecycle(app: Sanic) -> None:
 async def cleanup_stale_sessions(app: Sanic) -> None:
     while True:
         with suppress(asyncio.CancelledError):
-            await asyncio.sleep(60)  # Check every 60 seconds for stale sessions
+            await asyncio.sleep(60)
             app.ctx.session_store.cleanup_stale()
