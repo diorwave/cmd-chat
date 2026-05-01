@@ -1,6 +1,8 @@
 import asyncio
 import json
 import base64
+import sys
+from datetime import date
 from typing import Optional
 
 import srp
@@ -15,14 +17,23 @@ from rich.panel import Panel
 srp.rfc5054_enable()
 
 
+def _fmt_join_time(iso: str) -> str:
+    if len(iso) < 19:
+        return iso
+    day, time = iso[:10], iso[11:19]
+    return time if day == str(date.today()) else f"{day} {time}"
+
+
 class Client:
     def __init__(
-        self, server: str, port: int, username: str, password: Optional[str] = None
+        self, server: str, port: int, username: str, password: Optional[str] = None,
+        is_host: bool = False,
     ):
         self.server = server
         self.port = port
         self.username = username
         self.password = (password or "").encode()
+        self.is_host = is_host
         self.user_id: Optional[str] = None
         self.fernet: Optional[Fernet] = None
         self.room_fernet: Optional[Fernet] = None
@@ -32,6 +43,7 @@ class Client:
         self.users: list[dict] = []
         self.connected = False
         self.running = False
+        self._session_completed = False
 
     @property
     def base_url(self) -> str:
@@ -121,26 +133,36 @@ class Client:
     def render_messages(self) -> None:
         self.console.clear()
 
-        users_online = ", ".join(u.get("username", "?") for u in self.users) or "none"
+        height = self.console.size.height
+        width = self.console.size.width
+        # fixed rows: online + sep + sep + hint + input line = 5
+        message_rows = max(15, height - 5)
+
+        users_online = ", ".join(
+            f"{u.get('username', '?')} ({u.get('joined_at', '')})"
+            for u in self.users
+        ) or "none"
         self.console.print(f"[dim]Online: {users_online}[/]")
-        self.console.print("─" * 60)
+        self.console.print("─" * width)
 
-        display_messages = (
-            self.messages[-15:] if len(self.messages) > 15 else self.messages
-        )
+        display_messages = self.messages[-message_rows:]
+        # 1 slot reserved when empty for the "no messages" line
+        content_lines = len(display_messages) if display_messages else 1
 
-        for msg in display_messages:
-            username = msg.get("username", "unknown")
-            text = msg.get("text", "")
-            timestamp = str(msg.get("timestamp", ""))[:19].replace("T", " ")
+        for _ in range(message_rows - content_lines):
+            self.console.print()
 
-            style = "green" if username == self.username else "cyan"
-            self.console.print(f"[dim]{timestamp}[/] [{style}]{username}[/]: {text}")
-
-        if not display_messages:
+        if display_messages:
+            for msg in display_messages:
+                username = msg.get("username", "unknown")
+                text = msg.get("text", "")
+                timestamp = str(msg.get("timestamp", ""))[:19].replace("T", " ")
+                style = "green" if username == self.username else "cyan"
+                self.console.print(f"[dim]{timestamp}[/] [{style}]{username}[/]: {text}")
+        else:
             self.console.print("[dim italic]No messages yet...[/]")
 
-        self.console.print("─" * 60)
+        self.console.print("─" * width)
         self.console.print("[dim]Type message and press Enter. 'q' to quit.[/]")
 
     async def receive_loop(self, ws) -> None:
@@ -153,16 +175,27 @@ class Client:
                 msg_type = data.get("type", "")
 
                 if msg_type == "init":
-                    messages = [
-                        self.decrypt_message(m) for m in data.get("messages", [])
+                    self.messages = [self.decrypt_message(m) for m in data.get("messages", [])]
+                    self.users = [
+                        {
+                            "user_id": u.get("user_id"),
+                            "username": u.get("username", "?"),
+                            "joined_at": _fmt_join_time(u.get("joined_at", "")),
+                        }
+                        for u in data.get("users", [])
                     ]
-                    self.messages = messages
-                    self.users = data.get("users", [])
                     self.connected = True
                     self.render_messages()
                 elif msg_type == "message":
                     msg_data = self.decrypt_message(data.get("data", {}))
                     self.messages.append(msg_data)
+                    self.render_messages()
+                elif msg_type == "user_joined":
+                    self.users.append({
+                        "user_id": data.get("user_id"),
+                        "username": data.get("username", "?"),
+                        "joined_at": _fmt_join_time(data.get("joined_at", "")),
+                    })
                     self.render_messages()
                 elif msg_type == "user_left":
                     left_id = data.get("user_id")
@@ -170,22 +203,37 @@ class Client:
                     self.render_messages()
 
         except websockets.ConnectionClosed:
+            if self.running:
+                self.console.print("\n[yellow]Server has shut down.[/]")
+                self.running = False
             self.connected = False
 
     async def input_loop(self, ws) -> None:
-        loop = asyncio.get_event_loop()
-        while self.running:
-            try:
-                text = await loop.run_in_executor(None, input)
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+        )
+        try:
+            while self.running:
+                line = await reader.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n\r")
                 if text.lower() in ("q", "quit", "exit"):
+                    if self.is_host and self.room_fernet:
+                        farewell = self.room_fernet.encrypt(
+                            "Server shutting down — byeee! 👋".encode()
+                        ).decode()
+                        await ws.send(farewell)
+                        await asyncio.sleep(0.3)
                     self.running = False
                     break
                 if text.strip():
                     encrypted = self.room_fernet.encrypt(text.encode()).decode()
                     await ws.send(encrypted)
-            except (EOFError, KeyboardInterrupt):
-                self.running = False
-                break
+        finally:
+            transport.close()
 
     async def run_async(self) -> None:
         self.console.clear()
@@ -198,7 +246,7 @@ class Client:
             self.info("Connecting to chat...")
             url = f"{self.ws_url}/ws/chat?user_id={self.user_id}"
 
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, proxy=None) as ws:
                 self.success("Connected to chat server")
                 self.running = True
 
@@ -212,6 +260,7 @@ class Client:
                 for task in pending:
                     task.cancel()
 
+            self._session_completed = True
             self.console.print("\n[yellow]Disconnected[/]")
 
         except requests.exceptions.ConnectionError:
@@ -227,4 +276,9 @@ class Client:
             traceback.print_exc()
 
     def run(self) -> None:
-        asyncio.run(self.run_async())
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            if self._session_completed:
+                self.console.clear()
+                self.console.print("[dim]Session ended.[/]")

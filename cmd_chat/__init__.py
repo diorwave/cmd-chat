@@ -1,6 +1,4 @@
 import argparse
-from cmd_chat.server.server import run_server
-from cmd_chat.client.client import Client
 
 
 def main():
@@ -11,6 +9,7 @@ def main():
     serve_p.add_argument("ip_address")
     serve_p.add_argument("port")
     serve_p.add_argument("--password", "-p", required=True)
+    serve_p.add_argument("--join", "-j", metavar="USERNAME", help="Join chat as this user after server starts")
 
     connect_p = subparsers.add_parser("connect", help="Connect to server")
     connect_p.add_argument("ip_address")
@@ -21,8 +20,10 @@ def main():
     args = parser.parse_args()
 
     if args.command == "serve":
-        run_server(host=args.ip_address, port=int(args.port), password=args.password)
+        from cmd_chat.server.server import run_server
+        run_server(host=args.ip_address, port=int(args.port), password=args.password, join_as=args.join)
     elif args.command == "connect":
+        from cmd_chat.client.client import Client
         Client(
             server=args.ip_address,
             port=int(args.port),
