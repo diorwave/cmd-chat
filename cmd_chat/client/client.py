@@ -27,13 +27,14 @@ def _fmt_join_time(iso: str) -> str:
 class Client:
     def __init__(
         self, server: str, port: int, username: str, password: Optional[str] = None,
-        is_host: bool = False,
+        is_host: bool = False, ngrok_addr: Optional[str] = None,
     ):
         self.server = server
         self.port = port
         self.username = username
         self.password = (password or "").encode()
         self.is_host = is_host
+        self.ngrok_addr = ngrok_addr
         self.user_id: Optional[str] = None
         self.fernet: Optional[Fernet] = None
         self.room_fernet: Optional[Fernet] = None
@@ -47,10 +48,14 @@ class Client:
 
     @property
     def base_url(self) -> str:
+        if self.port == 443:
+            return f"https://{self.server}"
         return f"http://{self.server}:{self.port}"
 
     @property
     def ws_url(self) -> str:
+        if self.port == 443:
+            return f"wss://{self.server}"
         return f"ws://{self.server}:{self.port}"
 
     def success(self, message: str) -> None:
@@ -142,7 +147,8 @@ class Client:
             f"{u.get('username', '?')} ({u.get('joined_at', '')})"
             for u in self.users
         ) or "none"
-        self.console.print(f"[dim]Online: {users_online}[/]")
+        ngrok_suffix = f"  [dim]tunnel: {self.ngrok_addr}:443[/]" if self.ngrok_addr else ""
+        self.console.print(f"[dim]Online: {users_online}[/]{ngrok_suffix}")
         self.console.print("─" * width)
 
         display_messages = self.messages[-message_rows:]
