@@ -13,6 +13,7 @@ from .routes import register_routes
 
 def create_app(password: str = "", name: str = "cmd-chat-server") -> Sanic:
     app = Sanic(name)
+    app.config.GRACEFUL_SHUTDOWN_TIMEOUT = 0
     Extend(app)
 
     app.ctx.message_store = MessageStore()

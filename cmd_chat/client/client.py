@@ -17,6 +17,33 @@ from rich.panel import Panel
 srp.rfc5054_enable()
 
 
+def _clear_terminal() -> None:
+    try:
+        import os
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        os.write(fd, b"\033[H\033[2J\033[3J")
+        os.close(fd)
+    except OSError:
+        sys.stdout.write("\033[H\033[2J\033[3J")
+        sys.stdout.flush()
+
+
+def _wait_for_keypress() -> None:
+    import tty
+    import termios
+    try:
+        with open("/dev/tty", "rb") as tty_in:
+            fd = tty_in.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                tty_in.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (KeyboardInterrupt, EOFError, OSError):
+        pass
+
+
 def _fmt_join_time(iso: str) -> str:
     if len(iso) < 19:
         return iso
@@ -28,6 +55,7 @@ class Client:
     def __init__(
         self, server: str, port: int, username: str, password: Optional[str] = None,
         is_host: bool = False, ngrok_addr: Optional[str] = None,
+        on_disconnect=None,
     ):
         self.server = server
         self.port = port
@@ -35,6 +63,7 @@ class Client:
         self.password = (password or "").encode()
         self.is_host = is_host
         self.ngrok_addr = ngrok_addr
+        self.on_disconnect = on_disconnect
         self.user_id: Optional[str] = None
         self.fernet: Optional[Fernet] = None
         self.room_fernet: Optional[Fernet] = None
@@ -244,6 +273,20 @@ class Client:
     async def run_async(self) -> None:
         self.console.clear()
         self.console.print(Panel("[bold cyan]CMD Chat Client[/]", expand=False))
+        if self.ngrok_addr:
+            from rich.panel import Panel as _Panel
+            password = self.password.decode()
+            connect_cmd = f"python cmd_chat.py connect {self.ngrok_addr} 443 <username> <password>"
+            self.console.print(_Panel(
+                f"[bold green]ngrok tunnel active (HTTPS)[/]\n\n"
+                f"[cyan]Address:[/] https://{self.ngrok_addr}:443\n\n"
+                f"[cyan]Connect:[/] {connect_cmd}\n\n"
+                f"[bold red]⚠ The shared password must be pre-known and never sent over this channel.[/]\n"
+                f"[red]Anyone with the password can join and decrypt all messages.[/]\n"
+                f"[red]Sharing it here destroys all security guarantees.[/]",
+                title="[bold]Public Access[/]",
+                expand=False,
+            ))
         self.console.print()
 
         try:
@@ -265,6 +308,7 @@ class Client:
 
                 for task in pending:
                     task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
 
             self._session_completed = True
             self.console.print("\n[yellow]Disconnected[/]")
@@ -286,5 +330,8 @@ class Client:
             asyncio.run(self.run_async())
         finally:
             if self._session_completed:
-                self.console.clear()
-                self.console.print("[dim]Session ended.[/]")
+                if self.on_disconnect:
+                    self.on_disconnect()
+                self.console.print("\n[dim]Press any key to clear screen and exit...[/]")
+                _wait_for_keypress()
+                _clear_terminal()
