@@ -40,7 +40,8 @@ async def send_state(ws: Websocket, app: Sanic) -> None:
                 "type": "init",
                 "messages": [asdict(m) for m in messages],
                 "users": [
-                    {"user_id": u.user_id, "username": u.username} for u in users
+                    {"user_id": u.user_id, "username": u.username, "joined_at": u.created_at}
+                    for u in users
                 ],
             }
         )

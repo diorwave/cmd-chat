@@ -113,10 +113,56 @@ start server:
 python cmd_chat.py serve 0.0.0.0 3000 --password mysecret
 ```
 
+start server and join as host:
+
+```bash
+python cmd_chat.py serve 0.0.0.0 3000 --password mysecret --join alice
+```
+
 connect:
 
 ```bash
 python cmd_chat.py connect SERVER_IP 3000 username mysecret
+```
+
+### ngrok (internet access)
+
+expose your server over the internet without port forwarding using [ngrok](https://ngrok.com):
+
+```bash
+python cmd_chat.py serve 0.0.0.0 3000 --password mysecret --ngrok
+```
+
+with a free ngrok account (removes session limits):
+
+```bash
+python cmd_chat.py serve 0.0.0.0 3000 --password mysecret --ngrok --ngrok-token YOUR_TOKEN
+```
+
+on startup a panel is printed with the public address and ready-to-run connect command, e.g.:
+
+```
+╭─────────────── Public Access ────────────────╮
+│ ngrok tunnel active (HTTPS)                  │
+│                                              │
+│ Address: https://abc1-2a04.ngrok-free.app:443│
+│                                              │
+│ Connect: python cmd_chat.py connect          │
+│   abc1-2a04.ngrok-free.app 443 <username>    │
+│   mysecret                                   │
+╰──────────────────────────────────────────────╯
+```
+
+remote participants connect via the ngrok address (TLS encrypted end-to-end):
+
+```bash
+python cmd_chat.py connect abc1-2a04.ngrok-free.app 443 username mysecret
+```
+
+to host and chat simultaneously over ngrok:
+
+```bash
+python cmd_chat.py serve 0.0.0.0 3000 --password mysecret --ngrok --join alice
 ```
 
 ![Example](example.gif)

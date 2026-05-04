@@ -94,6 +94,10 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
 
     manager = app.ctx.connection_manager
     await manager.connect(user_id, ws)
+    await manager.broadcast(
+        json.dumps({"type": "user_joined", "user_id": user_id, "username": session.username, "joined_at": session.created_at}),
+        exclude_user=user_id,
+    )
 
     try:
         await send_state(ws, app)
@@ -124,11 +128,13 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
         pass
     finally:
         await manager.disconnect(user_id)
+        app.ctx.session_store.remove(user_id)
         await manager.broadcast(
             json.dumps(
                 {
                     "type": "user_left",
                     "user_id": user_id,
+                    "username": session.username,
                 }
             )
         )

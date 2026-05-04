@@ -1,6 +1,8 @@
 import asyncio
 import json
 import base64
+import sys
+from datetime import date
 from typing import Optional
 
 import srp
@@ -15,14 +17,53 @@ from rich.panel import Panel
 srp.rfc5054_enable()
 
 
+def _clear_terminal() -> None:
+    try:
+        import os
+        fd = os.open("/dev/tty", os.O_WRONLY)
+        os.write(fd, b"\033[H\033[2J\033[3J")
+        os.close(fd)
+    except OSError:
+        sys.stdout.write("\033[H\033[2J\033[3J")
+        sys.stdout.flush()
+
+
+def _wait_for_keypress() -> None:
+    import tty
+    import termios
+    try:
+        with open("/dev/tty", "rb") as tty_in:
+            fd = tty_in.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                tty_in.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (KeyboardInterrupt, EOFError, OSError):
+        pass
+
+
+def _fmt_join_time(iso: str) -> str:
+    if len(iso) < 19:
+        return iso
+    day, time = iso[:10], iso[11:19]
+    return time if day == str(date.today()) else f"{day} {time}"
+
+
 class Client:
     def __init__(
-        self, server: str, port: int, username: str, password: Optional[str] = None
+        self, server: str, port: int, username: str, password: Optional[str] = None,
+        is_host: bool = False, ngrok_addr: Optional[str] = None,
+        on_disconnect=None,
     ):
         self.server = server
         self.port = port
         self.username = username
         self.password = (password or "").encode()
+        self.is_host = is_host
+        self.ngrok_addr = ngrok_addr
+        self.on_disconnect = on_disconnect
         self.user_id: Optional[str] = None
         self.fernet: Optional[Fernet] = None
         self.room_fernet: Optional[Fernet] = None
@@ -32,13 +73,18 @@ class Client:
         self.users: list[dict] = []
         self.connected = False
         self.running = False
+        self._session_completed = False
 
     @property
     def base_url(self) -> str:
+        if self.port == 443:
+            return f"https://{self.server}"
         return f"http://{self.server}:{self.port}"
 
     @property
     def ws_url(self) -> str:
+        if self.port == 443:
+            return f"wss://{self.server}"
         return f"ws://{self.server}:{self.port}"
 
     def success(self, message: str) -> None:
@@ -121,26 +167,37 @@ class Client:
     def render_messages(self) -> None:
         self.console.clear()
 
-        users_online = ", ".join(u.get("username", "?") for u in self.users) or "none"
-        self.console.print(f"[dim]Online: {users_online}[/]")
-        self.console.print("─" * 60)
+        height = self.console.size.height
+        width = self.console.size.width
+        # fixed rows: online + sep + sep + hint + input line = 5
+        message_rows = max(15, height - 5)
 
-        display_messages = (
-            self.messages[-15:] if len(self.messages) > 15 else self.messages
-        )
+        users_online = ", ".join(
+            f"{u.get('username', '?')} ({u.get('joined_at', '')})"
+            for u in self.users
+        ) or "none"
+        ngrok_suffix = f"  [dim]tunnel: {self.ngrok_addr}:443[/]" if self.ngrok_addr else ""
+        self.console.print(f"[dim]Online: {users_online}[/]{ngrok_suffix}")
+        self.console.print("─" * width)
 
-        for msg in display_messages:
-            username = msg.get("username", "unknown")
-            text = msg.get("text", "")
-            timestamp = str(msg.get("timestamp", ""))[:19].replace("T", " ")
+        display_messages = self.messages[-message_rows:]
+        # 1 slot reserved when empty for the "no messages" line
+        content_lines = len(display_messages) if display_messages else 1
 
-            style = "green" if username == self.username else "cyan"
-            self.console.print(f"[dim]{timestamp}[/] [{style}]{username}[/]: {text}")
+        for _ in range(message_rows - content_lines):
+            self.console.print()
 
-        if not display_messages:
+        if display_messages:
+            for msg in display_messages:
+                username = msg.get("username", "unknown")
+                text = msg.get("text", "")
+                timestamp = str(msg.get("timestamp", ""))[:19].replace("T", " ")
+                style = "green" if username == self.username else "cyan"
+                self.console.print(f"[dim]{timestamp}[/] [{style}]{username}[/]: {text}")
+        else:
             self.console.print("[dim italic]No messages yet...[/]")
 
-        self.console.print("─" * 60)
+        self.console.print("─" * width)
         self.console.print("[dim]Type message and press Enter. 'q' to quit.[/]")
 
     async def receive_loop(self, ws) -> None:
@@ -153,16 +210,27 @@ class Client:
                 msg_type = data.get("type", "")
 
                 if msg_type == "init":
-                    messages = [
-                        self.decrypt_message(m) for m in data.get("messages", [])
+                    self.messages = [self.decrypt_message(m) for m in data.get("messages", [])]
+                    self.users = [
+                        {
+                            "user_id": u.get("user_id"),
+                            "username": u.get("username", "?"),
+                            "joined_at": _fmt_join_time(u.get("joined_at", "")),
+                        }
+                        for u in data.get("users", [])
                     ]
-                    self.messages = messages
-                    self.users = data.get("users", [])
                     self.connected = True
                     self.render_messages()
                 elif msg_type == "message":
                     msg_data = self.decrypt_message(data.get("data", {}))
                     self.messages.append(msg_data)
+                    self.render_messages()
+                elif msg_type == "user_joined":
+                    self.users.append({
+                        "user_id": data.get("user_id"),
+                        "username": data.get("username", "?"),
+                        "joined_at": _fmt_join_time(data.get("joined_at", "")),
+                    })
                     self.render_messages()
                 elif msg_type == "user_left":
                     left_id = data.get("user_id")
@@ -170,26 +238,55 @@ class Client:
                     self.render_messages()
 
         except websockets.ConnectionClosed:
+            if self.running:
+                self.console.print("\n[yellow]Server has shut down.[/]")
+                self.running = False
             self.connected = False
 
     async def input_loop(self, ws) -> None:
-        loop = asyncio.get_event_loop()
-        while self.running:
-            try:
-                text = await loop.run_in_executor(None, input)
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+        )
+        try:
+            while self.running:
+                line = await reader.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n\r")
                 if text.lower() in ("q", "quit", "exit"):
+                    if self.is_host and self.room_fernet:
+                        farewell = self.room_fernet.encrypt(
+                            "Server shutting down — byeee! 👋".encode()
+                        ).decode()
+                        await ws.send(farewell)
+                        await asyncio.sleep(0.3)
                     self.running = False
                     break
                 if text.strip():
                     encrypted = self.room_fernet.encrypt(text.encode()).decode()
                     await ws.send(encrypted)
-            except (EOFError, KeyboardInterrupt):
-                self.running = False
-                break
+        finally:
+            transport.close()
 
     async def run_async(self) -> None:
         self.console.clear()
         self.console.print(Panel("[bold cyan]CMD Chat Client[/]", expand=False))
+        if self.ngrok_addr:
+            from rich.panel import Panel as _Panel
+            password = self.password.decode()
+            connect_cmd = f"python cmd_chat.py connect {self.ngrok_addr} 443 <username> <password>"
+            self.console.print(_Panel(
+                f"[bold green]ngrok tunnel active (HTTPS)[/]\n\n"
+                f"[cyan]Address:[/] https://{self.ngrok_addr}:443\n\n"
+                f"[cyan]Connect:[/] {connect_cmd}\n\n"
+                f"[bold red]⚠ The shared password must be pre-known and never sent over this channel.[/]\n"
+                f"[red]Anyone with the password can join and decrypt all messages.[/]\n"
+                f"[red]Sharing it here destroys all security guarantees.[/]",
+                title="[bold]Public Access[/]",
+                expand=False,
+            ))
         self.console.print()
 
         try:
@@ -198,7 +295,7 @@ class Client:
             self.info("Connecting to chat...")
             url = f"{self.ws_url}/ws/chat?user_id={self.user_id}"
 
-            async with websockets.connect(url) as ws:
+            async with websockets.connect(url, proxy=None) as ws:
                 self.success("Connected to chat server")
                 self.running = True
 
@@ -211,7 +308,9 @@ class Client:
 
                 for task in pending:
                     task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
 
+            self._session_completed = True
             self.console.print("\n[yellow]Disconnected[/]")
 
         except requests.exceptions.ConnectionError:
@@ -227,4 +326,12 @@ class Client:
             traceback.print_exc()
 
     def run(self) -> None:
-        asyncio.run(self.run_async())
+        try:
+            asyncio.run(self.run_async())
+        finally:
+            if self._session_completed:
+                if self.on_disconnect:
+                    self.on_disconnect()
+                self.console.print("\n[dim]Press any key to clear screen and exit...[/]")
+                _wait_for_keypress()
+                _clear_terminal()
