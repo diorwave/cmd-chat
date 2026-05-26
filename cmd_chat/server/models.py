@@ -11,7 +11,6 @@ class Message:
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    user_ip: str = ""
     username: str = ""
 
 

@@ -28,6 +28,10 @@ def app():
     app.ctx.connection_manager = ConnectionManager()
     app.ctx.srp_manager = SRPAuthManager("testpassword")
     app.ctx.room_salt = os.urandom(16)
+    app.ctx.ws_secret = os.urandom(32)
+    app.ctx.admin_token = "test-admin-token"
+    from cmd_chat.server.helpers import RateLimiter
+    app.ctx.rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
     app.ctx.cleanup_task = None
 
     register_routes(app)

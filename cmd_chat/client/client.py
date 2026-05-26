@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 import base64
 from typing import Optional
 
@@ -17,14 +18,22 @@ srp.rfc5054_enable()
 
 class Client:
     def __init__(
-        self, server: str, port: int, username: str, password: Optional[str] = None
+        self,
+        server: str,
+        port: int,
+        username: str,
+        password: Optional[str] = None,
+        insecure: bool = False,
+        no_tls: bool = False,
     ):
         self.server = server
         self.port = port
         self.username = username
         self.password = (password or "").encode()
+        self.insecure = insecure
+        self.no_tls = no_tls
         self.user_id: Optional[str] = None
-        self.fernet: Optional[Fernet] = None
+        self.ws_token: Optional[str] = None
         self.room_fernet: Optional[Fernet] = None
 
         self.console = Console()
@@ -35,23 +44,42 @@ class Client:
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.server}:{self.port}"
+        scheme = "http" if self.no_tls else "https"
+        return f"{scheme}://{self.server}:{self.port}"
 
     @property
     def ws_url(self) -> str:
-        return f"ws://{self.server}:{self.port}"
+        scheme = "ws" if self.no_tls else "wss"
+        return f"{scheme}://{self.server}:{self.port}"
+
+    def _request_kwargs(self) -> dict:
+        kwargs: dict = {"timeout": 30}
+        if self.insecure and not self.no_tls:
+            kwargs["verify"] = False
+        return kwargs
+
+    def _ws_ssl_context(self) -> ssl.SSLContext | None:
+        if self.no_tls:
+            return None
+        if self.insecure:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        return True  # default verification
 
     def success(self, message: str) -> None:
-        self.console.print(f"[green]✓ {message}[/]")
+        self.console.print(f"[green]{message}[/]")
 
     def error(self, message: str) -> None:
-        self.console.print(f"[red]✗ {message}[/]")
+        self.console.print(f"[red]{message}[/]")
 
     def info(self, message: str) -> None:
-        self.console.print(f"[cyan]• {message}[/]")
+        self.console.print(f"[cyan]{message}[/]")
 
     def srp_authenticate(self) -> None:
         with self.console.status("[cyan]Starting SRP handshake...[/]", spinner="dots"):
+            req_kwargs = self._request_kwargs()
 
             usr = srp.User(b"chat", self.password, hash_alg=srp.SHA256)
             _, A = usr.start_authentication()
@@ -62,7 +90,7 @@ class Client:
                     "username": self.username,
                     "A": base64.b64encode(A).decode(),
                 },
-                timeout=30,
+                **req_kwargs,
             )
             resp.raise_for_status()
             init_data = resp.json()
@@ -93,7 +121,7 @@ class Client:
                     "username": self.username,
                     "M": base64.b64encode(M).decode(),
                 },
-                timeout=30,
+                **req_kwargs,
             )
             resp.raise_for_status()
             verify_data = resp.json()
@@ -104,8 +132,7 @@ class Client:
             if not usr.authenticated():
                 raise ValueError("Server authentication failed")
 
-            session_key = base64.b64decode(verify_data["session_key"])
-            self.fernet = Fernet(session_key)
+            self.ws_token = verify_data["ws_token"]
 
         self.success(f"SRP authenticated (session: {self.user_id[:8]}...)")
 
@@ -118,29 +145,36 @@ class Client:
                 msg["text"] = "[decrypt failed]"
         return msg
 
+    @staticmethod
+    def _safe_username(username: str) -> str:
+        return username.replace("[", "\\[")
+
     def render_messages(self) -> None:
         self.console.clear()
 
-        users_online = ", ".join(u.get("username", "?") for u in self.users) or "none"
+        users_online = (
+            ", ".join(self._safe_username(u.get("username", "?")) for u in self.users)
+            or "none"
+        )
         self.console.print(f"[dim]Online: {users_online}[/]")
-        self.console.print("─" * 60)
+        self.console.print("-" * 60)
 
         display_messages = (
             self.messages[-15:] if len(self.messages) > 15 else self.messages
         )
 
         for msg in display_messages:
-            username = msg.get("username", "unknown")
+            username = self._safe_username(msg.get("username", "unknown"))
             text = msg.get("text", "")
             timestamp = str(msg.get("timestamp", ""))[:19].replace("T", " ")
 
-            style = "green" if username == self.username else "cyan"
+            style = "green" if msg.get("username") == self.username else "cyan"
             self.console.print(f"[dim]{timestamp}[/] [{style}]{username}[/]: {text}")
 
         if not display_messages:
             self.console.print("[dim italic]No messages yet...[/]")
 
-        self.console.print("─" * 60)
+        self.console.print("-" * 60)
         self.console.print("[dim]Type message and press Enter. 'q' to quit.[/]")
 
     async def receive_loop(self, ws) -> None:
@@ -196,9 +230,10 @@ class Client:
             self.srp_authenticate()
 
             self.info("Connecting to chat...")
-            url = f"{self.ws_url}/ws/chat?user_id={self.user_id}"
+            url = f"{self.ws_url}/ws/chat?user_id={self.user_id}&ws_token={self.ws_token}"
 
-            async with websockets.connect(url) as ws:
+            ws_ssl = self._ws_ssl_context()
+            async with websockets.connect(url, ssl=ws_ssl) as ws:
                 self.success("Connected to chat server")
                 self.running = True
 

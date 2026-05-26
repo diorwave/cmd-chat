@@ -52,14 +52,19 @@ class TestClientInit:
         assert client.username == "testuser"
         assert client.password == b"testpassword"
         assert client.user_id is None
-        assert client.fernet is None
+        assert client.ws_token is None
         assert client.room_fernet is None
         assert client.connected is False
         assert client.running is False
 
     def test_client_urls(self, client):
-        assert client.base_url == "http://127.0.0.1:3000"
-        assert client.ws_url == "ws://127.0.0.1:3000"
+        assert client.base_url == "https://127.0.0.1:3000"
+        assert client.ws_url == "wss://127.0.0.1:3000"
+
+    def test_client_no_tls_urls(self):
+        c = Client("127.0.0.1", 3000, "user", "pass", no_tls=True)
+        assert c.base_url == "http://127.0.0.1:3000"
+        assert c.ws_url == "ws://127.0.0.1:3000"
 
     def test_client_empty_password(self):
         client = Client("localhost", 8080, "user", None)
