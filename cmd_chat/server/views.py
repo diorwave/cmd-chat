@@ -1,21 +1,26 @@
-from dataclasses import asdict
-
+import hashlib
+import hmac
 import json
 import base64
+from dataclasses import asdict
 
 from sanic import Sanic, Request, response, Websocket
 from sanic.response import HTTPResponse, json as json_response
 
 from .models import Message, UserSession
-from .helpers import (
-    get_client_ip,
-    send_state,
-    utcnow,
-)
+from .helpers import get_client_ip, send_state, utcnow
+
+
+def generate_ws_token(user_id: str, secret: bytes) -> str:
+    return hmac.new(secret, user_id.encode(), hashlib.sha256).hexdigest()
 
 
 async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
     try:
+        client_ip = get_client_ip(request)
+        if not app.ctx.rate_limiter.is_allowed(client_ip):
+            return response.json({"error": "Rate limited"}, status=429)
+
         data = request.json or {}
         username = data.get("username", "unknown")
         client_public_b64 = data.get("A")
@@ -45,6 +50,10 @@ async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
 
 async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
     try:
+        client_ip = get_client_ip(request)
+        if not app.ctx.rate_limiter.is_allowed(client_ip):
+            return response.json({"error": "Rate limited"}, status=429)
+
         data = request.json or {}
         user_id = data.get("user_id")
         client_proof_b64 = data.get("M")
@@ -67,10 +76,12 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
         )
         app.ctx.session_store.add(session)
 
+        ws_token = generate_ws_token(user_id, app.ctx.ws_secret)
+
         return response.json(
             {
                 "H_AMK": base64.b64encode(H_AMK).decode(),
-                "session_key": base64.b64encode(fernet_key).decode(),
+                "ws_token": ws_token,
             }
         )
 
@@ -82,9 +93,15 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
 
 async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
     user_id = request.args.get("user_id")
+    ws_token = request.args.get("ws_token")
 
-    if not user_id:
-        await ws.close(code=4002, reason="user_id required")
+    if not user_id or not ws_token:
+        await ws.close(code=4002, reason="user_id and ws_token required")
+        return
+
+    expected_token = generate_ws_token(user_id, app.ctx.ws_secret)
+    if not hmac.compare_digest(ws_token, expected_token):
+        await ws.close(code=4003, reason="Invalid token")
         return
 
     session = app.ctx.session_store.get(user_id)
@@ -106,7 +123,6 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
 
             message = Message(
                 text=str(data),
-                user_ip=session.ip,
                 username=session.username,
             )
             app.ctx.message_store.add(message)
@@ -146,8 +162,12 @@ async def health(request: Request, app: Sanic) -> HTTPResponse:
 
 
 async def clear_messages(request: Request, app: Sanic) -> HTTPResponse:
-    user_id = request.args.get("user_id")
-    if not user_id or not app.ctx.session_store.get(user_id):
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return response.json({"error": "Unauthorized"}, status=401)
+
+    token = auth_header[7:]
+    if not hmac.compare_digest(token, app.ctx.admin_token):
         return response.json({"error": "Unauthorized"}, status=401)
 
     app.ctx.message_store.clear()

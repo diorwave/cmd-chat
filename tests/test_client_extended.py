@@ -48,15 +48,20 @@ def room_fernet(room_salt):
 class TestClientProperties:
     def test_base_url_different_ports(self):
         client = Client("example.com", 8080, "user", "pass")
-        assert client.base_url == "http://example.com:8080"
+        assert client.base_url == "https://example.com:8080"
 
     def test_ws_url_different_ports(self):
         client = Client("example.com", 8080, "user", "pass")
-        assert client.ws_url == "ws://example.com:8080"
+        assert client.ws_url == "wss://example.com:8080"
 
     def test_base_url_localhost(self):
         client = Client("localhost", 443, "user", "pass")
-        assert client.base_url == "http://localhost:443"
+        assert client.base_url == "https://localhost:443"
+
+    def test_no_tls_urls(self):
+        client = Client("example.com", 8080, "user", "pass", no_tls=True)
+        assert client.base_url == "http://example.com:8080"
+        assert client.ws_url == "ws://example.com:8080"
 
     def test_password_encoding_unicode(self):
         client = Client("localhost", 3000, "user", "пароль123")
@@ -84,7 +89,7 @@ class TestSRPAuthentication:
         verify_response = MagicMock()
         verify_response.json.return_value = {
             "H_AMK": base64.b64encode(os.urandom(32)).decode(),
-            "session_key": base64.b64encode(Fernet.generate_key()).decode(),
+            "ws_token": "test-ws-token-hex",
         }
         verify_response.raise_for_status = MagicMock()
 
@@ -102,7 +107,7 @@ class TestSRPAuthentication:
 
         assert client.user_id == "test-user-id-12345"
         assert client.room_fernet is not None
-        assert client.fernet is not None
+        assert client.ws_token == "test-ws-token-hex"
 
     @patch("cmd_chat.client.client.requests.post")
     def test_srp_authenticate_init_fails(self, mock_post, client):
@@ -178,7 +183,7 @@ class TestSRPAuthentication:
         verify_response = MagicMock()
         verify_response.json.return_value = {
             "H_AMK": base64.b64encode(os.urandom(32)).decode(),
-            "session_key": base64.b64encode(Fernet.generate_key()).decode(),
+            "ws_token": "test-ws-token-hex",
         }
         verify_response.raise_for_status = MagicMock()
 
@@ -237,7 +242,6 @@ class TestDecryptMessage:
             "username": "sender",
             "timestamp": "2024-01-01T12:00:00",
             "id": "msg-123",
-            "user_ip": "192.168.1.1",
         }
 
         decrypted = client.decrypt_message(msg)
@@ -246,7 +250,6 @@ class TestDecryptMessage:
         assert decrypted["username"] == "sender"
         assert decrypted["timestamp"] == "2024-01-01T12:00:00"
         assert decrypted["id"] == "msg-123"
-        assert decrypted["user_ip"] == "192.168.1.1"
 
     def test_decrypt_wrong_key_marks_failed(self, client):
 
@@ -553,6 +556,7 @@ class TestRunAsync:
     @pytest.mark.asyncio
     async def test_run_successful_connection_and_disconnect(self, client):
         client.user_id = "test-id-123"
+        client.ws_token = "test-token"
 
         with patch.object(client, "srp_authenticate"):
             with patch("cmd_chat.client.client.websockets.connect") as mock_connect:
@@ -844,8 +848,8 @@ class TestEdgeCases:
     def test_port_zero(self):
         client = Client("localhost", 0, "user", "pass")
         assert client.port == 0
-        assert client.base_url == "http://localhost:0"
+        assert client.base_url == "https://localhost:0"
 
     def test_ipv6_server(self):
         client = Client("::1", 3000, "user", "pass")
-        assert client.base_url == "http://::1:3000"
+        assert client.base_url == "https://::1:3000"

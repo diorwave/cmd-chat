@@ -3,11 +3,14 @@ from .models import Message, UserSession
 
 
 class MessageStore:
-    def __init__(self):
+    def __init__(self, max_messages: int = 1000):
         self._messages: list[Message] = []
+        self._max = max_messages
 
     def add(self, message: Message) -> None:
         self._messages.append(message)
+        if len(self._messages) > self._max:
+            self._messages = self._messages[-self._max:]
 
     def get_all(self) -> list[Message]:
         return self._messages.copy()
