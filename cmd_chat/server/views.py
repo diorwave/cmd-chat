@@ -2,6 +2,7 @@ from dataclasses import asdict
 
 import json
 import base64
+import logging
 
 from sanic import Sanic, Request, response, Websocket
 from sanic.response import HTTPResponse, json as json_response
@@ -12,6 +13,8 @@ from .helpers import (
     send_state,
     utcnow,
 )
+
+log = logging.getLogger(__name__)
 
 
 async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
@@ -39,7 +42,8 @@ async def srp_init(request: Request, app: Sanic) -> HTTPResponse:
             }
         )
 
-    except Exception:
+    except Exception as e:
+        log.error(f"srp_init error: {type(e).__name__}: {e}", exc_info=True)
         return response.json({"error": "SRP init failed"}, status=500)
 
 
@@ -66,6 +70,7 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
             fernet_key=fernet_key,
         )
         app.ctx.session_store.add(session)
+        app.ctx.srp_manager.remove_session(user_id)
 
         return response.json(
             {
@@ -75,8 +80,10 @@ async def srp_verify(request: Request, app: Sanic) -> HTTPResponse:
         )
 
     except ValueError as e:
+        log.warning(f"srp_verify: {e}")
         return response.json({"error": str(e)}, status=401)
-    except Exception:
+    except Exception as e:
+        log.error(f"srp_verify error: {type(e).__name__}: {e}", exc_info=True)
         return response.json({"error": "SRP verify failed"}, status=500)
 
 
@@ -102,6 +109,10 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
             if data is None:
                 break
 
+            if not app.ctx.session_store.get(user_id):
+                log.warning(f"session lost: {user_id}")
+                break
+
             app.ctx.session_store.update_activity(user_id)
 
             message = Message(
@@ -120,8 +131,8 @@ async def chat_ws(request: Request, ws: Websocket, app: Sanic) -> None:
                 )
             )
 
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"ws error {user_id}: {type(e).__name__}: {e}", exc_info=True)
     finally:
         await manager.disconnect(user_id)
         await manager.broadcast(

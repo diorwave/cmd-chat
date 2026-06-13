@@ -1,0 +1,43 @@
+Performance Improvements - Implementation Record
+
+Branch: improve/performance-and-reliability
+Date: January 27, 2026
+
+Changes Made:
+
+1. Message Pagination (stores.py)
+   - Limited history to 50 messages
+   - Reduces memory usage
+
+2. Faster Session Cleanup (factory.py)
+   - Changed from 300s to 60s
+   - Quicker stale session removal
+
+3. Error Logging (views.py & managers.py)
+   - Proper exception logging
+   - Connection lifecycle logs
+
+4. Broadcast Lock Optimization (managers.py)
+   - Take snapshot of connections
+   - Send without holding lock
+   - Reduces latency under load
+
+5. Decryption Caching (client.py)
+   - Cache decrypted messages
+   - Avoid re-decrypting on render
+
+6. Session Validation (views.py)
+   - Check session validity during message receive
+
+7. SRP Session Cleanup (views.py)
+   - Clean up auth sessions after use
+
+Files Modified:
+- cmd_chat/server/stores.py
+- cmd_chat/server/factory.py
+- cmd_chat/server/views.py
+- cmd_chat/server/managers.py
+- cmd_chat/client/client.py
+
+No breaking changes. Ready for PR.
+
